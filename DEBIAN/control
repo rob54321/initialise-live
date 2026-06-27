@@ -1,6 +1,6 @@
 Package: initialise-live
 Version: 1.0.0
-Architecture: all
+Architecture: amd64
 Maintainer: Robert Key robkey@mighty.co.za
 Section: myown
 Priority: optional
