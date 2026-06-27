@@ -1,7 +1,7 @@
-Package: initialise-linux
-Version: 4.0.7
+Package: initialise-live
+Version: 1.0.0
 Architecture: all
 Maintainer: Robert Key robkey@mighty.co.za
 Section: myown
 Priority: optional
-Description: init-linux initialises linux on desktop and raspberry pi after install. It sets up accounts, multi-user.target, aliases etc.
+Description: This package initialises the ubuntu live system. Sets up account colours, gpg keys, local repository, local subversion, sudoers, user account
