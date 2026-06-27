@@ -1,0 +1,685 @@
+#!/bin/bash
+
+#########################################################
+# this script will be run by liveinstall.sh
+# in the chroot environment. It must only be run
+# once since it makes the user robert
+# This  script will write a file to /chroot/dochroot/init-linux
+# when it is run the first time. This is used to prevent it from
+# running a second time.
+#########################################################
+#####################################################
+# note check subversion is installed on raspberry pi
+# the live system is not used to install linux on rpi
+# this script needs subversion and editfstab
+#
+#===================================================
+# init-linux, editfstab and stedit must have been
+# copied to /usr/local/bin/ on the rpi sdcard
+# after the image was written
+#===================================================
+
+#####################################################
+#####################################################
+# this script should be run immediately after the rpi has
+# maximised the sdcard space, or on ubuntu after install or on live install
+# subversion and git are installed into the live system and hence installed for ubuntu as well
+# this script requires subversion
+# 1. boot to console
+# 2. set console font and keyboard
+# 3. set boot paramters for rpi/ubuntu and fstab
+# 4. export sudoers robert
+# 5. set aliases and bashrc for root and robert
+# 6. install subversion
+# 6. setup subversion resporitory
+# 7. setup debhome repository with debhomepubkey.asc and debhome.sources
+# 8. makes all mount directories and sets ownership
+# 9. if the user is pi, setup init service to create user robert after boot
+#    by using systemd service
+#    this is done so user pi is not active
+#    and usermod and groupmod can be run.
+#    this script is run by systemd after boot with a parameter
+#    to change user pi to robert only if the initial user was pi
+
+
+# function to create user robert in the live system.
+# the user is created only if it does not exist
+createuser () {
+	# script to create user robert in the chroot environment
+	# make sure we are running on the live system.
+	test "${LIVEINSTALL}" = "true" || return;
+
+	# check if user exists
+	getent passwd robert
+	RC=$?
+echo "getent returns ${RC}"
+	if test ${RC} -ne 0; then
+echo "createuser: user $1 does not exist"
+		# user does not exist
+		adduser --add-extra-groups --comment "robert key root103 0219596081 0218551556 nothing" --disabled-password $1
+
+		# add user to all the necessary groups
+		usermod -G 4,24,27,30,46 $1
+	else
+		# user exists
+		echo "createuser: User $1 exists"
+		id $1;
+	fi
+}
+
+# function to exit with status 1
+# the debhomedev is unmounted first
+# the rc code is passed as first parameter, no exit on 0, exit on 1, 2, 3..
+# second parameter is the error string
+exitonerror() {
+	# test rc code
+	if test $1 -ne 0; then
+		# display error string
+		echo "$2"
+
+		# log error
+		log "$2"
+		exit 1;
+	fi
+}
+
+###############################################################
+# function to log output
+# first parameter is string to log
+# second parameter is used to start
+# a new log file
+###############################################################
+log() {
+	test "$2" = "new"  && rm -f ${LOGFILE}
+	echo "$1" | tee -a ${LOGFILE}
+}
+
+################################
+# setup sudoers.d/robert
+# and fstab
+# setup console boot, hostname timezone,
+# export grub to /etc/default/grub in chroot
+# console fonts, keyboard, splash screen,
+# disable overscan
+# no parameters passed
+###################################
+setuplinux() {
+
+	# edit fstab
+	/usr/local/bin/editfstab -e
+
+	#############################################
+	# setup console boot, hostname timezone,
+	# console fonts, keyboard, splash screen,
+	# disable overscan
+	#############################################
+
+	# setup keyboard
+	# make a backup
+	test -f /etc/default/keyboard.bak || cp -v /etc/default/keyboard /etc/default/keyboard.bak
+
+	sed -i -e 's/XKBLAYOUT=\".*\"/XKBLAYOUT="za"/' /etc/default/keyboard
+	###################################################################
+	# for raspberry pi only
+	###################################################################
+	if test "${ARCH}" = "aarch64" || test "${ARCH}" = "armv6l"; then
+		# set the time and zone for desktop and rpi
+		timedatectl set-timezone Africa/Johannesburg
+
+		# raspberry pi 4
+		#               /boot/cmdline.txt
+		#               /boot/config.txt
+		# raspberry pi 5
+		#               /boot/firmware/cmdline.txt
+		#               /boot/firmware/config.txt
+		# set the file name depeding on the version of raspberry pi
+		#
+		# search in /boot/firmware first for rpi 5
+		if test -f "/boot/firmware/cmdline.txt"; then
+			CMDLINE="/boot/firmware/cmdline.txt"
+		else
+			CMDLINE="/boot/cmdline.txt"
+		fi
+		# this should be done by configdata or configdatarpi
+		# remove splash screen and make boot verbose and make the console cursor a block
+		sed -i -e 's/quiet splash plymouth.ignore-serial-consoles/vt.cur_default=8/' ${CMDLINE}
+
+		# set the raspberry pi to not do auto login
+		ln -fs /lib/systemd/system/getty@.service /etc/systemd/system/getty.target.wants/getty@tty1.service
+		if test -e /etc/systemd/system/getty@tty1.service.d/autologin.conf; then
+			rm /etc/systemd/system/getty@tty1.service.d/autologin.conf
+		fi
+
+		# set the raspberry pi to console login
+		systemctl set-default "${TARGET}"
+
+		# set hostname
+		hostnamectl set-hostname rpi
+		# change it in /etc/hosts
+		sed -i -e 's/raspberrypi/rpi/' /etc/hosts
+
+	#########################################################################
+	# for amd64 only livesystem and desktop
+	#########################################################################
+	elif test "${ARCH}" = "x86_64"; then
+		echo "setting up linux ${ARCH}"
+
+		# add repository for obs studio
+		#apt-add-repository --ppa obsproject/obs-studio
+		# /etc/apt/sources.list must have the followin line appended
+		# sed -i -e '$a\deb https://ppa.launchpadcontent.net/obsproject/obs-studio/ubuntu lunar main' /etc/apt/sources.list
+
+		# for live system only
+		if test "${LIVEINSTALL}" = "true"; then
+			# for the live system
+			# this is the Ubuntu live system
+			usermod -u 1000 robert
+			groupmod -g 1000 robert
+			chown -R robert:robert /home/robert/
+			# move mbl data files to /home/robert
+			# they only exist if system is live
+			# and mountblv has been installed
+			if test -f /root/.mbl.rc; then
+				mv -fv .mbl.rc /home/robert
+				chown robert:robert /home/robert/.mbl.rc
+			fi
+
+			if test -f /root/.mbldata.rc; then
+				mv -fv .mbldata.rc /home/robert
+				chown robert:robert /home/robert/.mbldata.rc
+			fi
+
+			# the timezone must be set and clock  must be set to local time
+			# this can only be done after the firt boot of the live system
+			# done with the service setzone.service.
+			# which will then disable itself.
+			# copy the service to /etc/systemd/system/
+			cp -v /usr/local/bin/setzone.service /etc/systemd/system/
+			# rm -v /usr/local/bin/setzone.service.
+			# enable service
+			systemctl enable setzone.service
+
+		else
+			###############################################
+			# for desktop only
+			###############################################
+
+			# disable editfstab.service since it will be enabled
+			# after installation of linux on amd64. It is enabled
+			# in the live system.
+			# note editfstab service will not exist if linux was installed
+			# from the iso image. First check if it exists
+			# set the time and zone for desktop
+			timedatectl set-timezone Africa/Johannesburg
+
+			# set clock to local time for desktop only when init-linux is run
+			timedatectl --adjust-system-clock set-local-rtc 0
+			# hwclock -w
+
+			# disable editfstab.service for desktop
+			systemctl is-enabled editfstab > /dev/null 2>&1
+			test $? -eq 0 && systemctl disable editfstab
+
+		fi
+	fi
+}
+
+#########################################################
+# function to setup subversion link to the new path
+# the new user must already exist
+# the owner.group of the /mnt directory must
+# be set to new user
+# check the repository exists and then check/set the link
+# to point to it.
+# parameters: setupreppository
+# 		$1 CURUSER  (non root)
+#		$2 svnpath | debhomepath
+#		$3 link  (/mnt/svn/ | /mnt/debhome)
+#		$4 debhome | svn device which may not be necessary
+#########################################################
+setuprepository() {
+	# check new user exists
+	getent passwd $1 > /dev/null 2>&1
+	exitonerror $? "new user $1 does not exist"
+
+	# makelive now makes directories /mnt/debhome
+	# and /mnt/svn to access svn and debhome.
+	# makelive delets these directories
+
+	# set ownership of /mnt to robert:robert
+	chown $1:$1 /mnt
+
+	# check that there is not a directory with the name of the link.
+	# remove it or fail
+	# if debhome or svn is a directory remove the directory
+	# so a link can be made.
+	# test -d link gives true if link points to a directory.
+	# hence test for directory must be
+	# if file exists and is not a link and is a directory
+	if test -e "${3}" && test ! -L "${3}" && test -d "${3}"; then
+		echo "${3} is a directory, removing .."
+		rmdir -v "${3}"
+		exitonerror $? "Could not remove directory ${3}"
+	fi
+
+	# check that repository can be found
+	# at the path
+	if test -d "$2"; then
+		# path exists now check the link
+		if test -L "$3"; then
+			# the link exists
+			# check where it points to
+			LINKPATH=`ls -l $3 | cut -d " " -f11`
+
+			# now check if link points to svn | debhome path
+			if test "${LINKPATH}" != "$2"; then
+				# link must be changed
+				rm -vf "$3"
+				exitonerror $? "could not remove link $3"
+				# make the new link
+				sudo -u $1 ln -s "$2" "$3"
+				exitonerror $? "could not make the link $3"
+			fi
+
+		else
+			# there is no link
+			# make the link
+			sudo -u $1 ln -s "$2" "$3"
+			exitonerror $? "could not make the link $3"
+		fi
+		# subversion | debhome exists and link is correct
+		echo "old link -> ${LINKPATH} new link -> $2"
+		log "repository exists $3 -> $2"
+
+	else
+		# full path does not exist to repository
+		# try and mount debhome | svn device
+		test -d "/mnt/$4" || sudo -u $1 mkdir "/mnt/$4"
+		exitonerror $? "could not make directory /mnt/$4"
+
+		# mount the device if not mounted
+		# check where it is mounted
+		# should be on /mnt/$4
+		findmnt --source LABEL="$4"
+		if test $? -eq 0; then
+			# device is mounted
+			# get mountpoint
+			MNTPT=`findmnt --source LABEL="$4" -o TARGET | sed -n -e '2p'`
+			echo "$4 is mounted at ${MNTPT}"
+
+			# if mount point is not /mnt/$4
+			# then umount and mount again
+			if test "${MNTPT}" != "/mnt/$4"; then
+				# mounted but not at /mnt/$4
+				umount "${MNTPT}"
+				exitonerror $? "could not umount ${MNTPT}"
+				# mount it correctly
+				mount -v -L "$4" "/mnt/$4"
+				exitonerror $? "could not mount $4 at /mnt/$4"
+			fi
+		else
+			# $4 is not mounted
+			mount -v -L "$4" "/mnt/$4"
+			exitonerror $? "could not mount $4 at /mnt/$4"
+		fi
+
+		# remove and make the link for subversion | debhome
+		rm -vf "$3"
+		sudo -u $1 ln -v -s "$2" "$3"
+		exitonerror $? "could not make the link $3"
+
+		# check that the repository exists from the link
+		test -d "$3" || exitonerror 1 "repository not found at $2"
+
+		# subversion | debhome exists and link is correct
+		log "repository exists $3 -> $2"
+
+	fi
+	# repository exists
+
+
+}
+
+###########################################
+# make all the mount directories
+# the new user must already exist
+# set ownership to CURUSER of new directories and /mnt
+# parameters: makedirs ${CURUSER}
+###########################################
+makedirs() {
+echo "makedirs: \$1 = $1"
+	chown $1:$1 /mnt
+
+	# make all /mnt directories
+	/usr/local/bin/editfstab -d
+
+	# change ownership of links
+	chown --no-dereference $1:$1 /mnt/*
+	log "made directories"
+}
+
+#############################################
+# setup colors for accounts and nano
+# install bash_aliases, git config files and rclone.conf
+# parameters: accountcolours current user
+# svn must be set up
+#############################################
+accountcolours() {
+
+
+	#############################
+	# setup /root account for rpi
+	#############################
+	# root .bashrc edit so directories will be in colour for root and red prompt
+	if test ! -f /root/.bashrc.bak; then
+		cp -f /root/.bashrc /root/.bashrc.bak
+	fi
+
+	# for ubuntu, it is commented out
+	sed -i -e 's/^#force_color_prompt=yes/force_color_prompt=yes/' /root/.bashrc
+
+	# prompt for ubuntu and rpi
+	if test "${ARCH}" = "x86_64"; then
+
+		# make the prompt
+		sed -i -e 's/PS1=.*033\[00m\\\].*/PS1='\''\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;31m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;36m\\]\\w \#\\[\\033[00m\\] '\'''/ /root/.bashrc
+	elif test "${ARCH}" = "aarch64" || test "${ARCH}" = "armv6l"; then
+
+		# make the prompt
+		sed -i -e 's/^# PS1=.*/PS1='\''\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;31m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;36m\\]\\w \#\\[\\033[00m\\] '\'''/ /root/.bashrc
+	fi
+
+	# setup the aliases for colour
+	sed -i -e 's/^# alias l/alias l/' /root/.bashrc
+
+	# setup to use .dircolors
+	sed -i -e 's/^# export LS/export LS/' /root/.bashrc
+	sed -i -e 's/^# eval.*dircolors.*/eval \"\$(dircolors -b ~\/.dircolors)\"/' /root/.bashrc
+
+	# set up dircolors for root
+	dircolors --print-database > /root/.dircolors
+	sed -i -e 's/^DIR 01;34/DIR 01;36/' /root/.dircolors
+	sed -i -e 's/^LINK 01;36/LINK 01;33/' /root/.dircolors
+
+	#########################
+	# setup  non root account for current user
+	#########################
+
+	# copy .dircolors to /home/robert and set ownership
+	cp /root/.dircolors "/home/$1/"
+	echo "accountcolours: \$1 = $1"
+	chown $1:$1 /home/$1/.dircolors
+
+	# edit .bashrc for pi so directories will be in colour
+	if test ! -f /home/$1/.bashrc.bak; then
+		sudo -u $1 cp /home/$1/.bashrc /home/$1/.bashrc.bak
+	fi
+	# change colour of prompt
+	sudo -u $1 sed -i -e 's/#force_color_prompt/force_color_prompt/' /home/$1/.bashrc
+	sudo -u $1 sed -i -e 's/\[\\033\[01;34m\\\]/\[\\033\[01;36m\\\]/' /home/$1/.bashrc
+
+	# edit subversion config so .git and .gitignore are ignored
+	sed -i -e 's/^# global-ignores =/global-ignores = .git .gitignore/' /etc/subversion/config
+
+}
+
+######################################################################
+# installprerquisites
+# this function sets up a raspberry pi so that 
+# the local repository can be used.
+######################################################################
+installprerequisites() {
+
+	# for each item in the list
+	# install it, if it is not installed
+	# setting editfstab and stedit to manualy installed
+	LIST=(editfstab stedit)
+	for ITEM in "${LIST[@]}"; do
+
+		# check if item is installed
+		dpkg-query -s ${ITEM} 1>/dev/null 2>&1
+		if test $? -ne 0; then
+			# install ITEM
+			apt install ${ITEM} -y
+			exitonerror $? "could not install ${ITEM}"
+		fi
+	done
+	# set editfstab and stedit to manually installed so  they are not removed
+	# when initialise-linux is purged
+	apt-mark manual editfstab stedit
+
+	# install configdata or configdatarpi and thunderbirddata or thunderbirddatarpi
+	# depending on architecture
+	if test "${ARCH}" = "aarch64"; then
+		# configdatarpi depends on stedit
+		LIST=(configdatarpi)
+		for ITEM in "${LIST[@]}"; do
+			# check if item is installed
+			dpkg-query -s ${ITEM} 1>/dev/null 2>&1
+			if test $? -ne 0; then
+				# install ITEM
+				apt install ${ITEM} -y
+				exitonerror $? "could not install ${ITEM}"
+			fi
+		done
+	elif test "${ARCH}" = "x86_64"; then
+		# configdata depends on stedit
+		LIST=(configdata)
+		for ITEM in "${LIST[@]}"; do
+			# check if item is installed
+			dpkg-query -s ${ITEM} 1>/dev/null 2>&1
+			if test $? -ne 0; then
+				# install ITEM
+				apt install ${ITEM} -y
+				exitonerror $? "could not install ${ITEM}"
+			fi
+		done
+	else
+		exitonerror 1 "Unknown architecture ${ARCH}"
+	fi
+
+}
+
+usage() {
+	echo "-g set target to graphical target               default: ${TARGET}";
+	echo "-n set target to multi-user.target	        default: ${TARGET}";
+	echo "-d full path to debhome				default: ${DEBHOMEPATH}";
+	echo "-D debhome default device			default: ${DEBHOMEDEVICE}";
+	echo "-s full path to svn      			default: ${SVNPATH}";
+	echo "-S svn device					default: ${SVNDEVICE}";
+   	echo "-V version and exit";
+   	echo "-L run in chrootenvironment";
+	echo "-h help";
+	exit 0
+}
+
+# defaults, links
+# /mnt/debhome    -> DEBHOMEPATH
+# /mnt/svn        -> SVNPATH
+# the links cannot be changed, the mountpoints can be changed
+
+# defaults
+# TARGET is multi-user.target or graphical.target
+# the default is multi-user.target
+TARGET="multi-user.target"
+DEBHOMEDEVICE="ad64"
+DEBHOMEPATH="/mnt/${DEBHOMEDEVICE}/debhome"
+SVNDEVICE="ad64"
+SVNPATH="/mnt/${SVNDEVICE}/svn"
+LOGFILE="/tmp/init-linux.log"
+# the current non root user, either robert or pi
+CURUSER="robert"
+ARCH=`arch`
+
+# if this script is run by
+# liveinstall then createuser
+# must be run otherwise not
+# LIVEINSTALL is used to indicate
+# it was called by liveinstall
+LIVEINSTALL="false"
+
+################################
+# constants which never change
+################################
+DEBHOMELINK="/mnt/debhome"
+SVNLINK="/mnt/svn"
+SVNURL="file:///${SVNLINK}"
+
+################################
+# main entry
+################################
+
+
+# init-linux must not be run on a live system
+if test `hostname` = "live"; then
+	echo "init-linux cannot be run on a live system"
+	exit 0;
+fi
+
+# parameter S destinstion of svn is
+# only used in init-rpi, not in this script
+# it must be defined here as it is passed to init-rpi
+while getopts gnd:D:s:S:VhL opt
+do
+	case ${opt} in
+		d) DEBHOMEPATH="${OPTARG}";;
+		g) TARGET="graphical.target";;
+		n) TARGET="multi-user.target";;
+		D) DEBHOMEDEVICE="${OPTARG}";;
+		s) SVNPATH="${OPTARG}";;
+		S) SVNDEVICE="${OPTARG}";;
+		L) LIVEINSTALL="true";;
+		V) dpkg-query -W "initialise-linux"; exit 0;;
+		h) usage;;
+		\?) usage;;
+	esac
+done
+
+log "init-linux is running on ${ARCH}" "new"
+
+# check if we are running in the chroot environment
+# makelive made the directory /chroot/chrootenvironment
+test -d "/chrootenvironment" && LIVEINSTALL="true";
+
+# if we are running on the live system
+# only run if /chroot/dochroot/init-linux does not exist
+# this script must only needs to be run once
+if test "${LIVEINSTALL}" = "true"; then
+	# running on the live system
+	# check if init-linux has already run
+	if test -f "/dochroot/init-linux"; then
+		# init-linux has already run
+		# log and exit
+		log "init-linux has already run returning"
+
+		# exit with success
+		exit 0;
+	fi
+
+	# now make the file /dochroot/init-linux
+	# to indicate that init-linux has been
+	test -d /dochroot || mkdir /dochroot
+	echo "init-linux has run" > /dochroot/init-linux
+
+	# log
+	log "init-linux is running on chroot"
+
+	# only create user robert if it does not exist
+	getent passwd robert;
+	if test $? -ne 0; then
+		createuser "robert";
+	fi
+fi
+
+
+#######################################
+# setup svn and debhome and set links for desktop and rpi
+# setuprepository must not be invoked in the chroot environment
+# /mnt/svn and /mnt/debhome are directories and not links
+# when liveinstall and init-linux are run.
+#bindall in makelive.pl makes them directories 
+# for binding. unbindall restores links.
+#######################################
+if test "${LIVEINSTALL}" = "false"; then
+	# debhome must be done before svn since the link is required
+	# to copy debhomepubkey.asc and debhome.sources from /mnt/debhome
+	setuprepository "${CURUSER}" "${DEBHOMEPATH}" "${DEBHOMELINK}" "${DEBHOMEDEVICE}"
+	setuprepository "${CURUSER}" "${SVNPATH}" "${SVNLINK}" "${SVNDEVICE}"
+
+	# for rpi copy debhome-rpi.sources
+	if test "${ARCH}" = "aarch64"; then
+		cp -vf "/tmp/debhome-rpi.list" "/etc/apt/sources.list.d/"
+		exitonerror $? "Could not copy debhome-rpi.list /etc/apt/sources.list.d"
+	elif test "${ARCH}" = "x86_64"; then
+		cp -vf "/tmp/debhome-amd64.list" "/etc/apt/sources.list.d/"
+		exitonerror $? "Could not copy debhome-amd64.list /etc/apt/sources.list.d"
+	else
+		exitonerror 1 "Unknown architecture ${ARCH}"
+	fi
+
+	# import the secret key from /mnt/debhome/
+	# secret key is debhomeseckey.asc
+
+	gpg --import "/tmp/debhomeseckey.gpg"
+	test "$?" -eq 0 || exitonerror 1 "Could not import secret key /tmp/debhomeseckey.gpg"
+
+	# remove files from /tmp
+	rm -vf "/tmp/debhome-rpi.list"
+	rm -vf "/tmp/debhome-amd64.list"
+	rm -vf "/tmp/debhomeseckey.gpg"
+	
+	##############################################
+	# linux 24.04 needs a graphical environment for
+	# the live system. liveinstall.sh sets the environment
+	# in a livesystem.
+	##############################################
+	# set the rpi to boot to console and no autologin
+	systemctl set-default "${TARGET}"
+fi
+
+# update the repositories
+apt update
+
+####################################
+# note: git, subversion, editfstab
+# init-linux are all install in filesystem.squashfs
+# by liveinstall.sh when makeing the image
+# but not installed on the raspberry pi
+# install all pre requisites for the raspberry pi
+# some items will come from debhome.
+# so the repository must be setup
+####################################
+installprerequisites;
+
+########################################
+# make directories and set ownership
+########################################
+echo "main: CURUSER = ${CURUSER}"
+makedirs "${CURUSER}"
+
+########################################
+# raspberry pi needs debhome and svn to
+# mounted
+########################################
+
+
+
+# setup up account colours
+# subversion repository must be accessible
+accountcolours "${CURUSER}"
+
+####################################
+# setup linux sudoers, console, host
+# config boot parameters, keyboard,
+# autologin, multi-user
+####################################
+setuplinux
+
+####################################
+# copy dconf and ubuntu-mate
+# for xwindows into /home/robert/.config
+###################################
+
+# sync new fstab with system
+systemctl daemon-reload
+log "success"

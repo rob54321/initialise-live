@@ -1,0 +1,17 @@
+#!/bin/bash
+# script to set the time zone and clock to local time 
+# after the first boot of the live system.
+
+timedatectl set-timezone Africa/Johannesburg
+timedatectl --adjust-system-clock set-local-rtc 0
+timedatectl set-ntp 1
+
+echo "settimezone ran at `date`" >> /home/robert/.settimezone.rc
+
+# disable the service
+systemctl disable setzone.service
+
+# also tidy up /etc/apt/sources.list
+# sometimes a line for cdrom is inserted.
+# delete it 
+sed -i -e '/^deb cdrom/d' /etc/apt/sources.list
