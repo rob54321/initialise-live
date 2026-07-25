@@ -4,7 +4,7 @@
 # this script will be run by liveinstall.sh
 # in the chroot environment. It must only be run
 # once since it makes the user robert
-# This  script will write a file to /chroot/dochroot/init-linux
+# This  script will write a file to /chroot/dochroot/init-live
 # when it is run the first time. This is used to prevent it from
 # running a second time.
 #########################################################
@@ -14,7 +14,7 @@
 # this script needs subversion and editfstab
 #
 #===================================================
-# init-linux, editfstab and stedit must have been
+# init-live, editfstab and stedit must have been
 # copied to /usr/local/bin/ on the rpi sdcard
 # after the image was written
 #===================================================
@@ -212,7 +212,7 @@ setuplinux() {
 			# set the time and zone for desktop
 			timedatectl set-timezone Africa/Johannesburg
 
-			# set clock to local time for desktop only when init-linux is run
+			# set clock to local time for desktop only when init-live is run
 			timedatectl --adjust-system-clock set-local-rtc 0
 			# hwclock -w
 
@@ -506,7 +506,7 @@ DEBHOMEDEVICE="ad64"
 DEBHOMEPATH="/mnt/${DEBHOMEDEVICE}/debhome"
 SVNDEVICE="ad64"
 SVNPATH="/mnt/${SVNDEVICE}/svn"
-LOGFILE="/tmp/init-linux.log"
+LOGFILE="/tmp/init-live.log"
 # the current non root user, either robert or pi
 CURUSER="robert"
 ARCH=`arch`
@@ -530,9 +530,9 @@ SVNURL="file:///${SVNLINK}"
 ################################
 
 
-# init-linux must not be run on a live system
+# init-live must not be run on a live system
 if test `hostname` = "live"; then
-	echo "init-linux cannot be run on a live system"
+	echo "init-live cannot be run on a live system"
 	exit 0;
 fi
 
@@ -555,34 +555,34 @@ do
 	esac
 done
 
-log "init-linux is running on ${ARCH}" "new"
+log "init-live is running on ${ARCH}" "new"
 
 # check if we are running in the chroot environment
 # makelive made the directory /chroot/chrootenvironment
 test -d "/chrootenvironment" && LIVEINSTALL="true";
 
 # if we are running on the live system
-# only run if /chroot/dochroot/init-linux does not exist
+# only run if /chroot/dochroot/init-live does not exist
 # this script must only needs to be run once
 if test "${LIVEINSTALL}" = "true"; then
 	# running on the live system
-	# check if init-linux has already run
-	if test -f "/dochroot/init-linux"; then
-		# init-linux has already run
+	# check if init-live has already run
+	if test -f "/dochroot/init-live"; then
+		# init-live has already run
 		# log and exit
-		log "init-linux has already run returning"
+		log "init-live has already run returning"
 
 		# exit with success
 		exit 0;
 	fi
 
-	# now make the file /dochroot/init-linux
-	# to indicate that init-linux has been
+	# now make the file /dochroot/init-live
+	# to indicate that init-live has been
 	test -d /dochroot || mkdir /dochroot
-	echo "init-linux has run" > /dochroot/init-linux
+	echo "init-live has run" > /dochroot/init-live
 
 	# log
-	log "init-linux is running on chroot"
+	log "init-live is running on chroot"
 
 	# only create user robert if it does not exist
 	getent passwd robert;
@@ -596,7 +596,7 @@ fi
 # setup svn and debhome and set links for desktop and rpi
 # setuprepository must not be invoked in the chroot environment
 # /mnt/svn and /mnt/debhome are directories and not links
-# when liveinstall and init-linux are run.
+# when liveinstall and init-live are run.
 #bindall in makelive.pl makes them directories 
 # for binding. unbindall restores links.
 #######################################
@@ -642,7 +642,7 @@ apt update
 
 ####################################
 # note: git, subversion, editfstab
-# init-linux are all install in filesystem.squashfs
+# init-live are all install in filesystem.squashfs
 # by liveinstall.sh when makeing the image
 # but not installed on the raspberry pi
 # install all pre requisites for the raspberry pi
